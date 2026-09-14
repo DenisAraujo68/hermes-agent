@@ -17,7 +17,13 @@ import {
   updateGroupChat
 } from './group-chat'
 import type { GroupChatRoom, GroupHoldStamp } from './group-chat'
-import { durableGroupChatMembers, followGroupChat, groupMemberKey } from './group-membership'
+import {
+  durableGroupChatMembers,
+  followGroupChat,
+  groupMemberKey,
+  groupSessionKey,
+  hasThreadScopedGroupSession
+} from './group-membership'
 import { runGroupContinuationMembers, runGroupRoundMember } from './group-round-members'
 import { rejectGroupSlashCommand } from './group-slash'
 import { harvestStrandedGroupReply } from './group-turns'
@@ -398,7 +404,15 @@ export async function stopGroupThread(group: string, thread: null | string, memb
   })
 
   // The captured descriptor owns routing even if the roster has changed.
-  const sessionId = onTurn ? (room.sessions || {})[groupMemberKey(onTurn)] : null
+  // Sessions are per thread, so a stop targets the session of the thread it
+  // was issued from; an unmigrated room still answers on its bare pointer.
+  const sessions = room.sessions || {}
+  const onTurnKey = onTurn ? groupMemberKey(onTurn) : ''
+
+  const sessionId = onTurn
+    ? sessions[groupSessionKey(thread || 'legacy', onTurn)] ||
+      (hasThreadScopedGroupSession(sessions, onTurnKey) ? null : sessions[onTurnKey])
+    : null
 
   if (onTurn && sessionId) {
     try {
