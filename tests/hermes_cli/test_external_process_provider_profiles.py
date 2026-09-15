@@ -29,6 +29,26 @@ class _FakeProcessProfile(ProviderProfile):
         return self.live_models
 
 
+class _IncompatibleSigProcessProfile(ProviderProfile):
+    """An external-process profile whose fetch_models needs keyword-only HTTP credentials.
+
+    The generic external-process discovery calls fetch_models() with no arguments, so this
+    signature is incompatible with it and the call raises TypeError internally.
+    """
+
+    def __init__(self):
+        super().__init__(
+            name="test-process-provider-badsig", display_name="Test Process Provider",
+            description="Test ACP provider", base_url="acp://test-process",
+            auth_type="external_process", process_command="test-process",
+            process_args=("--acp",), process_command_env_vars=("TEST_PROCESS_COMMAND",),
+            process_args_env_var="TEST_PROCESS_ARGS", fallback_models=("fallback-agent",),
+        )
+
+    def fetch_models(self, *, api_key, base_url):
+        return ["live-agent"]
+
+
 @pytest.fixture
 def process_profile(monkeypatch):
     """Register a profile through the same registries an external plugin uses."""
@@ -36,6 +56,19 @@ def process_profile(monkeypatch):
     from hermes_cli import auth
 
     profile = _FakeProcessProfile(["live-agent"])
+    monkeypatch.setitem(providers._REGISTRY, profile.name, profile)
+    monkeypatch.setattr(providers, "_PROVIDER_LIST_CACHE", None)
+    auth._register_plugin_provider(profile)
+    yield profile
+
+
+@pytest.fixture
+def incompatible_process_profile(monkeypatch):
+    """Register an external-process profile with an incompatible fetch_models signature."""
+    import providers
+    from hermes_cli import auth
+
+    profile = _IncompatibleSigProcessProfile()
     monkeypatch.setitem(providers._REGISTRY, profile.name, profile)
     monkeypatch.setattr(providers, "_PROVIDER_LIST_CACHE", None)
     auth._register_plugin_provider(profile)
@@ -90,3 +123,17 @@ def test_external_process_profile_uses_fallback_models_when_discovery_fails(monk
     process_profile.live_models = None
     assert models.provider_model_ids(process_profile.name, force_refresh=True) == ["fallback-agent"]
     assert models.cached_provider_model_ids(process_profile.name, force_refresh=True) == ["fallback-agent"]
+
+
+def test_external_process_profile_incompatible_fetch_signature_degrades_gracefully(
+        monkeypatch, incompatible_process_profile):
+    """The generic external-process discovery calls fetch_models() with no arguments. A profile
+    whose fetch_models requires keyword-only HTTP credentials raises TypeError under that call;
+    provider_model_ids swallows it and degrades to the curated catalog rather than propagating
+    the TypeError to the picker."""
+    from hermes_cli import models
+
+    _canonicalize_fake_profile(monkeypatch)
+    # No TypeError escapes; the profile has no static catalog entry so the graceful result is empty.
+    assert models.provider_model_ids(
+        incompatible_process_profile.name, force_refresh=True) == []
